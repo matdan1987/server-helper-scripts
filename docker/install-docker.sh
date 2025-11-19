@@ -362,3 +362,21 @@ main() {
     
     if is_debian_based; then
         setup_docker_repository_debian
+    elif is_redhat_based; then
+        setup_docker_repository_redhat
+    fi
+    
+    install_docker_engine
+    install_docker_compose_standalone
+    configure_docker_service
+    configure_docker_daemon
+    add_user_to_docker_group
+    verify_installation
+    show_post_install_info
+    show_elapsed_time
+}
+
+trap 'log_error "Docker-Installation fehlgeschlagen!"; exit 1' ERR
+trap 'log_info "Installation abgebrochen"; exit 130' INT TERM
+
+main "$@"
