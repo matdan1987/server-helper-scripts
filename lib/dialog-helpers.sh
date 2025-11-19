@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # dialog-helpers.sh - Interaktive Dialog-Funktionen (whiptail/dialog)
-# Version: 1.0.0
+# Version: 1.1.0
 
 # Abhängigkeiten laden
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+source "$SCRIPT_DIR/common.sh" 2>/dev/null || true
 
 # =============================================================================
 # DIALOG-COMMAND AUSWÄHLEN
@@ -25,36 +25,10 @@ DIALOG_TOOL=$(select_dialog_tool)
 # Dialog installieren falls nicht vorhanden
 ensure_dialog_installed() {
     if [[ -z "$DIALOG_TOOL" ]]; then
-        log_warn "Kein Dialog-Tool gefunden, installiere whiptail..."
-        
-        if is_debian_based; then
-            apt-get install -y whiptail 2>/dev/null
-        elif is_redhat_based; then
-            yum install -y newt 2>/dev/null
-        fi
-        
-        DIALOG_TOOL=$(select_dialog_tool)
-        
-        if [[ -z "$DIALOG_TOOL" ]]; then
-            log_error "Konnte kein Dialog-Tool installieren!"
-            return 1
-        fi
+        # Kein Dialog-Tool verfügbar - funktioniert ohne
+        return 1
     fi
-    
-    log_debug "Verwende Dialog-Tool: $DIALOG_TOOL"
     return 0
-}
-
-# =============================================================================
-# WRAPPER-FUNKTIONEN
-# =============================================================================
-
-_run_dialog() {
-    if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        whiptail "$@" 3>&1 1>&2 2>&3
-    else
-        dialog "$@" 2>&1 1>/dev/tty
-    fi
 }
 
 # =============================================================================
@@ -67,9 +41,17 @@ dialog_message() {
     local height="${3:-10}"
     local width="${4:-60}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        echo "[$title] $message"
+        return 0
+    fi
     
-    _run_dialog --title "$title" --msgbox "$message" "$height" "$width"
+    if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
+        whiptail --title "$title" --msgbox "$message" "$height" "$width" 3>&1 1>&2 2>&3 || true
+    else
+        dialog --title "$title" --msgbox "$message" "$height" "$width" 2>&1 1>/dev/tty || true
+    fi
 }
 
 dialog_info() {
@@ -98,12 +80,19 @@ dialog_yesno() {
     local height="${3:-10}"
     local width="${4:-60}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        read -p "[$title] $question (j/N): " answer
+        [[ "${answer,,}" =~ ^(j|ja|y|yes)$ ]]
+        return $?
+    fi
     
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        whiptail --title "$title" --yesno "$question" "$height" "$width"
+        whiptail --title "$title" --yesno "$question" "$height" "$width" 3>&1 1>&2 2>&3
+        return $?
     else
-        dialog --title "$title" --yesno "$question" "$height" "$width"
+        dialog --title "$title" --yesno "$question" "$height" "$width" 2>&1 1>/dev/tty
+        return $?
     fi
 }
 
@@ -122,7 +111,12 @@ dialog_input() {
     local height="${4:-10}"
     local width="${5:-60}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        read -p "[$title] $prompt [$default]: " value
+        echo "${value:-$default}"
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
         whiptail --title "$title" --inputbox "$prompt" "$height" "$width" "$default" 3>&1 1>&2 2>&3
@@ -137,7 +131,13 @@ dialog_password() {
     local height="${3:-10}"
     local width="${4:-60}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        read -s -p "[$title] $prompt: " password
+        echo
+        echo "$password"
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
         whiptail --title "$title" --passwordbox "$prompt" "$height" "$width" 3>&1 1>&2 2>&3
@@ -159,34 +159,23 @@ dialog_menu() {
     shift 5
     local options=("$@")
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        echo "$prompt"
+        local i=0
+        while [[ $i -lt ${#options[@]} ]]; do
+            echo "${options[$i]}) ${options[$((i+1))]}"
+            i=$((i + 2))
+        done
+        read -p "Wähle: " choice
+        echo "$choice"
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
         whiptail --title "$title" --menu "$prompt" "$height" "$width" "$menu_height" "${options[@]}" 3>&1 1>&2 2>&3
     else
         dialog --title "$title" --menu "$prompt" "$height" "$width" "$menu_height" "${options[@]}" 2>&1 1>/dev/tty
-    fi
-}
-
-# =============================================================================
-# RADIOLIST (Einzelauswahl)
-# =============================================================================
-
-dialog_radiolist() {
-    local title="$1"
-    local prompt="$2"
-    local height="${3:-20}"
-    local width="${4:-60}"
-    local list_height="${5:-10}"
-    shift 5
-    local options=("$@")
-    
-    ensure_dialog_installed || return 1
-    
-    if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        whiptail --title "$title" --radiolist "$prompt" "$height" "$width" "$list_height" "${options[@]}" 3>&1 1>&2 2>&3
-    else
-        dialog --title "$title" --radiolist "$prompt" "$height" "$width" "$list_height" "${options[@]}" 2>&1 1>/dev/tty
     fi
 }
 
@@ -203,12 +192,58 @@ dialog_checklist() {
     shift 5
     local options=("$@")
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar - gib alle "on" Items zurück
+    if ! ensure_dialog_installed; then
+        local result=""
+        local i=0
+        while [[ $i -lt ${#options[@]} ]]; do
+            if [[ "${options[$((i+2))]}" == "on" ]]; then
+                result="$result ${options[$i]}"
+            fi
+            i=$((i + 3))
+        done
+        echo "$result"
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
         whiptail --title "$title" --checklist "$prompt" "$height" "$width" "$list_height" "${options[@]}" 3>&1 1>&2 2>&3
     else
         dialog --title "$title" --checklist "$prompt" "$height" "$width" "$list_height" "${options[@]}" 2>&1 1>/dev/tty
+    fi
+}
+
+# =============================================================================
+# RADIOLIST (Einzelauswahl)
+# =============================================================================
+
+dialog_radiolist() {
+    local title="$1"
+    local prompt="$2"
+    local height="${3:-20}"
+    local width="${4:-60}"
+    local list_height="${5:-10}"
+    shift 5
+    local options=("$@")
+    
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        local i=0
+        while [[ $i -lt ${#options[@]} ]]; do
+            if [[ "${options[$((i+2))]}" == "on" ]]; then
+                echo "${options[$i]}"
+                return 0
+            fi
+            i=$((i + 3))
+        done
+        echo "${options[0]}"
+        return 0
+    fi
+    
+    if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
+        whiptail --title "$title" --radiolist "$prompt" "$height" "$width" "$list_height" "${options[@]}" 3>&1 1>&2 2>&3
+    else
+        dialog --title "$title" --radiolist "$prompt" "$height" "$width" "$list_height" "${options[@]}" 2>&1 1>/dev/tty
     fi
 }
 
@@ -222,31 +257,17 @@ dialog_gauge() {
     local height="${3:-10}"
     local width="${4:-60}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        cat > /dev/null  # Verwerfe Input
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        whiptail --title "$title" --gauge "$prompt" "$height" "$width" 0
+        whiptail --title "$title" --gauge "$prompt" "$height" "$width" 0 3>&1 1>&2 2>&3
     else
         dialog --title "$title" --gauge "$prompt" "$height" "$width" 0
     fi
-}
-
-# Progress mit Updates
-dialog_progress() {
-    local title="$1"
-    local total="$2"
-    local current=0
-    
-    (
-        while read -r line; do
-            current=$((current + 1))
-            local percentage=$((current * 100 / total))
-            echo "$percentage"
-            echo "XXX"
-            echo "$line"
-            echo "XXX"
-        done
-    ) | dialog_gauge "$title" "Verarbeite..." 10 70
 }
 
 # =============================================================================
@@ -259,17 +280,46 @@ dialog_textbox() {
     local height="${3:-20}"
     local width="${4:-70}"
     
-    ensure_dialog_installed || return 1
-    
     if [[ ! -f "$file" ]]; then
         dialog_error "Datei nicht gefunden: $file"
         return 1
     fi
     
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        cat "$file"
+        return 0
+    fi
+    
     if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        whiptail --title "$title" --textbox "$file" "$height" "$width" --scrolltext
+        whiptail --title "$title" --textbox "$file" "$height" "$width" --scrolltext 3>&1 1>&2 2>&3 || true
     else
-        dialog --title "$title" --textbox "$file" "$height" "$width"
+        dialog --title "$title" --textbox "$file" "$height" "$width" || true
+    fi
+}
+
+# =============================================================================
+# PAUSE
+# =============================================================================
+
+dialog_pause() {
+    local title="$1"
+    local message="$2"
+    local seconds="${3:-5}"
+    
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        echo "$message"
+        sleep "$seconds"
+        return 0
+    fi
+    
+    if [[ "$DIALOG_TOOL" == "dialog" ]]; then
+        dialog --title "$title" --pause "$message" 10 60 "$seconds" || return 1
+    else
+        # Whiptail hat kein pause, nutze msgbox mit timeout
+        whiptail --title "$title" --msgbox "$message\n\n(Automatisch in ${seconds}s)" 10 60 3>&1 1>&2 2>&3 || true
+        sleep "$seconds"
     fi
 }
 
@@ -283,12 +333,17 @@ dialog_fselect() {
     local height="${3:-20}"
     local width="${4:-70}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        read -p "[$title] Pfad eingeben [$path]: " result
+        echo "${result:-$path}"
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "dialog" ]]; then
         dialog --title "$title" --fselect "$path" "$height" "$width" 2>&1 1>/dev/tty
     else
-        # Whiptail hat kein fselect, verwende Input
+        # Whiptail hat kein fselect
         dialog_input "$title" "Pfad eingeben:" "$path" "$height" "$width"
     fi
 }
@@ -299,7 +354,12 @@ dialog_dselect() {
     local height="${3:-20}"
     local width="${4:-70}"
     
-    ensure_dialog_installed || return 1
+    # Fallback wenn kein Dialog verfügbar
+    if ! ensure_dialog_installed; then
+        read -p "[$title] Verzeichnis eingeben [$path]: " result
+        echo "${result:-$path}"
+        return 0
+    fi
     
     if [[ "$DIALOG_TOOL" == "dialog" ]]; then
         dialog --title "$title" --dselect "$path" "$height" "$width" 2>&1 1>/dev/tty
@@ -309,99 +369,11 @@ dialog_dselect() {
 }
 
 # =============================================================================
-# FORM (Mehrere Eingabefelder)
-# =============================================================================
-
-dialog_form() {
-    local title="$1"
-    local height="${2:-20}"
-    local width="${3:-70}"
-    local form_height="${4:-10}"
-    shift 4
-    local fields=("$@")
-    
-    ensure_dialog_installed || return 1
-    
-    if [[ "$DIALOG_TOOL" == "dialog" ]]; then
-        dialog --title "$title" --form "Formular ausfüllen:" "$height" "$width" "$form_height" "${fields[@]}" 2>&1 1>/dev/tty
-    else
-        # Whiptail hat kein Form, einzelne Inputs
-        local results=()
-        local i=0
-        while [[ $i -lt ${#fields[@]} ]]; do
-            local label="${fields[$i]}"
-            local default="${fields[$((i+3))]}"
-            local result=$(dialog_input "$title" "$label" "$default")
-            results+=("$result")
-            i=$((i + 8))
-        done
-        printf "%s\n" "${results[@]}"
-    fi
-}
-
-# =============================================================================
-# HELPER-FUNKTIONEN
-# =============================================================================
-
-dialog_pause() {
-    local title="$1"
-    local message="$2"
-    local seconds="${3:-5}"
-    
-    ensure_dialog_installed || return 1
-    
-    if [[ "$DIALOG_TOOL" == "dialog" ]]; then
-        dialog --title "$title" --pause "$message" 10 60 "$seconds"
-    else
-        whiptail --title "$title" --msgbox "$message\n\n(Automatische Fortsetzung in ${seconds}s)" 10 60
-    fi
-}
-
-# =============================================================================
-# BEISPIEL-VERWENDUNG
-# =============================================================================
-
-dialog_example() {
-    cat << 'EOF'
-# Beispiele für dialog-helpers.sh
-
-# Einfache Nachricht
-dialog_info "Dies ist eine Info-Nachricht"
-
-# Ja/Nein-Frage
-if dialog_confirm "Möchten Sie fortfahren?"; then
-    echo "Bestätigt!"
-fi
-
-# Eingabe
-name=$(dialog_input "Benutzername" "Geben Sie Ihren Namen ein:" "admin")
-
-# Passwort
-password=$(dialog_password "Passwort" "Geben Sie Ihr Passwort ein:")
-
-# Menü
-choice=$(dialog_menu "Hauptmenü" "Wählen Sie eine Option:" 15 60 5 \
-    "1" "Option 1" \
-    "2" "Option 2" \
-    "3" "Option 3")
-
-# Checklist
-selected=$(dialog_checklist "Features auswählen" "Wählen Sie Features:" 15 60 5 \
-    "feature1" "Feature 1" on \
-    "feature2" "Feature 2" off \
-    "feature3" "Feature 3" on)
-
-# Fortschritt
-echo -e "0\n25\n50\n75\n100" | dialog_gauge "Installation" "Installiere..." 10 70
-EOF
-}
-
-# =============================================================================
 # AUTO-INITIALISIERUNG
 # =============================================================================
 
 if ensure_dialog_installed; then
-    log_debug "dialog-helpers.sh geladen - Tool: $DIALOG_TOOL"
+    log_debug "dialog-helpers.sh geladen - Tool: $DIALOG_TOOL" 2>/dev/null || true
 else
-    log_warn "Dialog-Tool konnte nicht initialisiert werden"
+    log_debug "dialog-helpers.sh geladen - Fallback-Modus (kein Dialog-Tool)" 2>/dev/null || true
 fi
