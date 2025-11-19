@@ -619,6 +619,9 @@ main() {
     # Exports
     [[ -n "$export_csv_file" ]] && export_csv "$export_csv_file"
     [[ -n "$export_json_file" ]] && export_json "$export_json_file"
+
+    # Explizit mit Exit-Code 0 beenden
+    exit 0
 }
 
 set +e
