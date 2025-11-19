@@ -186,17 +186,17 @@ show_vms() {
 check_ip_conflicts() {
     log_info "IP-Konflikt-Prüfung"
     echo
-    
+
     local conflicts=0
-    
+
     while read -r line; do
         [[ -z "$line" ]] && continue
         local vmid=$(echo "$line" | awk '{print $1}')
         [[ -z "$vmid" ]] && continue
-        
+
         local expected_ip=$(get_ip_for_vmid "$vmid")
         local actual_ip=$(pct config "$vmid" 2>/dev/null | grep -oP 'ip=\K[0-9.]+' | head -1 || echo "")
-        
+
         if [[ -n "$actual_ip" ]] && [[ "$actual_ip" =~ ^${IP_BASE//./\\.}\. ]]; then
             if [[ "$actual_ip" != "$expected_ip" ]]; then
                 echo "  Warnung: LXC $vmid hat $actual_ip (erwartet: $expected_ip)"
@@ -204,11 +204,13 @@ check_ip_conflicts() {
             fi
         fi
     done < <(pct list 2>/dev/null | tail -n +2 || true)
-    
+
     if [[ $conflicts -eq 0 ]]; then
         echo "  Keine Konflikte gefunden"
+    else
+        log_warn "$conflicts IP-Konflikte gefunden"
     fi
-    
+
     echo
 }
 
@@ -216,19 +218,28 @@ show_free_ranges() {
     log_info "Freie IDs"
     echo
 
-    local existing_lxc=$(pct list 2>/dev/null | tail -n +2 | awk '{print $1}' | sort -n || echo "")
+    # Sammle alle verwendeten VMIDs (LXC + VMs)
+    local existing_vmids=$(
+        {
+            pct list 2>/dev/null | tail -n +2 | awk '{print $1}'
+            qm list 2>/dev/null | tail -n +2 | awk '{print $1}'
+        } | sort -n -u
+    )
 
     echo "  Naechste freie LXC-IDs:"
     local count=0
     for vmid in $(seq $LXC_ID_START $LXC_ID_END); do
-        if ! echo "$existing_lxc" | grep -q "^${vmid}$"; then
+        if ! echo "$existing_vmids" | grep -q "^${vmid}$"; then
             local ip=$(get_ip_for_vmid "$vmid")
             printf "    VMID %-4s -> IP %s\n" "$vmid" "$ip"
             count=$((count + 1))
             [[ $count -ge 5 ]] && break
         fi
     done
-    [[ $count -eq 0 ]] && echo "    Keine freien IDs"
+
+    if [[ $count -eq 0 ]]; then
+        echo "    Keine freien IDs"
+    fi
     echo
 }
 
