@@ -3,14 +3,40 @@
 # Script: System Update All
 # Beschreibung: Aktualisiert alle System-Pakete auf Debian/Ubuntu/CentOS/Fedora
 # Autor: matdan1987
-# Version: 1.0.0
+# Version: 1.1.0
 # ==============================================================================
 
 set -euo pipefail
 
-# Script-Verzeichnis ermitteln
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd)"
+# =============================================================================
+# PFAD-ERKENNUNG (funktioniert mit curl und lokal)
+# =============================================================================
+
+# Prüfe ob Script via curl ausgeführt wird
+if [[ "$0" == "/dev/fd/"* ]] || [[ "$0" == "bash" ]] || [[ "$0" == "-bash" ]]; then
+    # Via curl - lade Bibliotheken direkt von GitHub
+    GITHUB_RAW="https://raw.githubusercontent.com/matdan1987/server-helper-scripts/main"
+    
+    # Temporäres Verzeichnis für Bibliotheken
+    LIB_TMP="/tmp/helper-scripts-lib-$$"
+    mkdir -p "$LIB_TMP"
+    
+    # Bibliotheken herunterladen
+    echo "Lade Bibliotheken..."
+    curl -fsSL "$GITHUB_RAW/lib/common.sh" -o "$LIB_TMP/common.sh"
+    curl -fsSL "$GITHUB_RAW/lib/os-detection.sh" -o "$LIB_TMP/os-detection.sh"
+    curl -fsSL "$GITHUB_RAW/lib/package-manager.sh" -o "$LIB_TMP/package-manager.sh"
+    curl -fsSL "$GITHUB_RAW/lib/dialog-helpers.sh" -o "$LIB_TMP/dialog-helpers.sh"
+    
+    LIB_DIR="$LIB_TMP"
+    
+    # Cleanup bei Exit
+    trap "rm -rf '$LIB_TMP'" EXIT
+else
+    # Lokal - normale Pfad-Erkennung
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd)"
+fi
 
 # Bibliotheken laden
 source "$LIB_DIR/common.sh"
