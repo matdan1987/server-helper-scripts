@@ -3,7 +3,7 @@
 # Script: Proxmox IP-Map Anzeigen
 # Beschreibung: Zeigt Übersicht aller Container/VMs mit ihren IPs und Status
 # Autor: matdan1987
-# Version: 1.0.0
+# Version: 1.1.0
 # ==============================================================================
 
 set -euo pipefail
@@ -57,35 +57,18 @@ show_network_schema() {
 }
 
 count_resources() {
-    local lxc_count=0
-    local vm_count=0
-    local lxc_running=0
-    local vm_running=0
-    
-    # Zähle LXCs
-    for vmid in $(seq $LXC_ID_START $LXC_ID_END); do
-        if pct status "$vmid" &>/dev/null; then
-            lxc_count=$((lxc_count + 1))
-            if pct status "$vmid" | grep -q "running"; then
-                lxc_running=$((lxc_running + 1))
-            fi
-        fi
-    done
-    
-    # Zähle VMs
-    for vmid in $(seq $VM_ID_START $VM_ID_END); do
-        if qm status "$vmid" &>/dev/null; then
-            vm_count=$((vm_count + 1))
-            if qm status "$vmid" | grep -q "running"; then
-                vm_running=$((vm_running + 1))
-            fi
-        fi
-    done
-    
     log_info "═══════════════════════════════════════════════════════"
     log_info "  Ressourcen-Übersicht"
     log_info "═══════════════════════════════════════════════════════"
     echo
+    
+    # Schneller Weg: nutze pct/qm list
+    local lxc_count=$(pct list 2>/dev/null | tail -n +2 | wc -l)
+    local vm_count=$(qm list 2>/dev/null | tail -n +2 | wc -l)
+    
+    local lxc_running=$(pct list 2>/dev/null | grep -c "running" || echo 0)
+    local vm_running=$(qm list 2>/dev/null | grep -c "running" || echo 0)
+    
     echo "  LXC Container:  $lxc_count gesamt ($lxc_running laufend)"
     echo "  VMs:            $vm_count gesamt ($vm_running laufend)"
     echo "  Total:          $((lxc_count + vm_count)) Container/VMs"
@@ -104,7 +87,7 @@ get_container_ip() {
             return 0
         fi
         
-        # Fallback: Versuche aus laufendem Container
+        # Fallback: Versuche aus laufendem Container (nur wenn running)
         if pct status "$vmid" 2>/dev/null | grep -q "running"; then
             local running_ip=$(pct exec "$vmid" -- hostname -I 2>/dev/null | awk '{print $1}')
             if [[ -n "$running_ip" ]]; then
@@ -127,120 +110,124 @@ get_container_ip() {
 
 show_lxc_containers() {
     log_info "═══════════════════════════════════════════════════════"
-    log_info "  LXC Container (${LXC_ID_START}-${LXC_ID_END})"
+    log_info "  LXC Container"
     log_info "═══════════════════════════════════════════════════════"
     echo
     
-    local found=0
+    # Nutze pct list für Performance
+    local lxc_list=$(pct list 2>/dev/null | tail -n +2)
+    
+    if [[ -z "$lxc_list" ]]; then
+        echo "  ${YELLOW}Keine LXC Container gefunden${NC}"
+        echo
+        return
+    fi
     
     # Tabellen-Header
     printf "  %-6s %-18s %-25s %-12s %-8s %s\n" "VMID" "IP" "HOSTNAME" "STATUS" "MEMORY" "DISK"
     printf "  %-6s %-18s %-25s %-12s %-8s %s\n" "------" "------------------" "-------------------------" "------------" "--------" "--------"
     
-    for vmid in $(seq $LXC_ID_START $LXC_ID_END); do
-        if pct status "$vmid" &>/dev/null; then
-            found=1
-            
-            local hostname=$(pct config "$vmid" 2>/dev/null | grep -oP 'hostname: \K.*' || echo "unknown")
-            local ip=$(get_container_ip "$vmid" "lxc")
-            local status=$(pct status "$vmid" 2>/dev/null | awk '{print $2}')
-            local memory=$(pct config "$vmid" 2>/dev/null | grep -oP 'memory: \K[0-9]+' || echo "?")
-            local disk=$(pct config "$vmid" 2>/dev/null | grep -oP 'rootfs.*size=\K[0-9]+G' || echo "?")
-            
-            # Farbige Status-Anzeige
-            local status_display
-            case "$status" in
-                running)
-                    status_display="${GREEN}running${NC}"
-                    ;;
-                stopped)
-                    status_display="${RED}stopped${NC}"
-                    ;;
-                *)
-                    status_display="${YELLOW}${status}${NC}"
-                    ;;
-            esac
-            
-            # IP-Konflikt-Warnung
-            local expected_ip=$(get_ip_for_vmid "$vmid")
-            local ip_display="$ip"
-            if [[ "$ip" != "$expected_ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                ip_display="${YELLOW}${ip} (!${expected_ip})${NC}"
-            fi
-            
-            printf "  %-6s %-18s %-25s %-20s %-8s %s\n" \
-                "$vmid" \
-                "$ip_display" \
-                "${hostname:0:25}" \
-                "$status_display" \
-                "${memory}MB" \
-                "$disk"
+    while read -r line; do
+        local vmid=$(echo "$line" | awk '{print $1}')
+        local status=$(echo "$line" | awk '{print $2}')
+        local hostname=$(echo "$line" | awk '{print $3}')
+        
+        local ip=$(get_container_ip "$vmid" "lxc")
+        local memory=$(pct config "$vmid" 2>/dev/null | grep -oP 'memory: \K[0-9]+' || echo "?")
+        local disk=$(pct config "$vmid" 2>/dev/null | grep -oP 'rootfs.*size=\K[0-9]+G' || echo "?")
+        
+        # Farbige Status-Anzeige
+        local status_display
+        case "$status" in
+            running)
+                status_display="${GREEN}running${NC}"
+                ;;
+            stopped)
+                status_display="${RED}stopped${NC}"
+                ;;
+            *)
+                status_display="${YELLOW}${status}${NC}"
+                ;;
+        esac
+        
+        # IP-Konflikt-Warnung
+        local expected_ip=$(get_ip_for_vmid "$vmid")
+        local ip_display="$ip"
+        if [[ "$ip" != "$expected_ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            ip_display="${YELLOW}${ip} (!${expected_ip})${NC}"
         fi
-    done
-    
-    if [[ $found -eq 0 ]]; then
-        echo "  ${YELLOW}Keine LXC Container gefunden${NC}"
-    fi
+        
+        printf "  %-6s %-18s %-25s %-20s %-8s %s\n" \
+            "$vmid" \
+            "$ip_display" \
+            "${hostname:0:25}" \
+            "$status_display" \
+            "${memory}MB" \
+            "$disk"
+            
+    done <<< "$lxc_list"
     
     echo
 }
 
 show_vms() {
     log_info "═══════════════════════════════════════════════════════"
-    log_info "  Virtual Machines (${VM_ID_START}-${VM_ID_END})"
+    log_info "  Virtual Machines"
     log_info "═══════════════════════════════════════════════════════"
     echo
     
-    local found=0
+    # Nutze qm list für Performance
+    local vm_list=$(qm list 2>/dev/null | tail -n +2)
+    
+    if [[ -z "$vm_list" ]]; then
+        echo "  ${YELLOW}Keine VMs gefunden${NC}"
+        echo
+        return
+    fi
     
     # Tabellen-Header
     printf "  %-6s %-18s %-25s %-12s %-8s %s\n" "VMID" "IP" "NAME" "STATUS" "MEMORY" "DISK"
     printf "  %-6s %-18s %-25s %-12s %-8s %s\n" "------" "------------------" "-------------------------" "------------" "--------" "--------"
     
-    for vmid in $(seq $VM_ID_START $VM_ID_END); do
-        if qm status "$vmid" &>/dev/null; then
-            found=1
-            
-            local name=$(qm config "$vmid" 2>/dev/null | grep -oP 'name: \K.*' || echo "unknown")
-            local ip=$(get_container_ip "$vmid" "vm")
-            local status=$(qm status "$vmid" 2>/dev/null | awk '{print $2}')
-            local memory=$(qm config "$vmid" 2>/dev/null | grep -oP 'memory: \K[0-9]+' || echo "?")
-            local disk=$(qm config "$vmid" 2>/dev/null | grep -oP 'size=\K[0-9]+G' | head -1 || echo "?")
-            
-            # Farbige Status-Anzeige
-            local status_display
-            case "$status" in
-                running)
-                    status_display="${GREEN}running${NC}"
-                    ;;
-                stopped)
-                    status_display="${RED}stopped${NC}"
-                    ;;
-                *)
-                    status_display="${YELLOW}${status}${NC}"
-                    ;;
-            esac
-            
-            # IP-Konflikt-Warnung
-            local expected_ip=$(get_ip_for_vmid "$vmid")
-            local ip_display="$ip"
-            if [[ "$ip" != "$expected_ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                ip_display="${YELLOW}${ip} (!${expected_ip})${NC}"
-            fi
-            
-            printf "  %-6s %-18s %-25s %-20s %-8s %s\n" \
-                "$vmid" \
-                "$ip_display" \
-                "${name:0:25}" \
-                "$status_display" \
-                "${memory}MB" \
-                "$disk"
+    while read -r line; do
+        local vmid=$(echo "$line" | awk '{print $1}')
+        local name=$(echo "$line" | awk '{print $2}')
+        local status=$(echo "$line" | awk '{print $3}')
+        
+        local ip=$(get_container_ip "$vmid" "vm")
+        local memory=$(qm config "$vmid" 2>/dev/null | grep -oP 'memory: \K[0-9]+' || echo "?")
+        local disk=$(qm config "$vmid" 2>/dev/null | grep -oP 'size=\K[0-9]+G' | head -1 || echo "?")
+        
+        # Farbige Status-Anzeige
+        local status_display
+        case "$status" in
+            running)
+                status_display="${GREEN}running${NC}"
+                ;;
+            stopped)
+                status_display="${RED}stopped${NC}"
+                ;;
+            *)
+                status_display="${YELLOW}${status}${NC}"
+                ;;
+        esac
+        
+        # IP-Konflikt-Warnung
+        local expected_ip=$(get_ip_for_vmid "$vmid")
+        local ip_display="$ip"
+        if [[ "$ip" != "$expected_ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            ip_display="${YELLOW}${ip} (!${expected_ip})${NC}"
         fi
-    done
-    
-    if [[ $found -eq 0 ]]; then
-        echo "  ${YELLOW}Keine VMs gefunden${NC}"
-    fi
+        
+        printf "  %-6s %-18s %-25s %-20s %-8s %s\n" \
+            "$vmid" \
+            "$ip_display" \
+            "${name:0:25}" \
+            "$status_display" \
+            "${memory}MB" \
+            "$disk"
+            
+    done <<< "$vm_list"
     
     echo
 }
@@ -254,36 +241,39 @@ check_ip_conflicts() {
     local conflicts=0
     local warnings=()
     
-    # Prüfe alle VMIDs
-    for vmid in $(seq 100 299); do
-        if vmid_exists "$vmid"; then
-            local expected_ip=$(get_ip_for_vmid "$vmid")
-            local type=$(get_vmid_type "$vmid")
-            local actual_ip=""
-            
-            if [[ "$type" == "lxc" ]]; then
-                actual_ip=$(pct config "$vmid" 2>/dev/null | grep -oP 'ip=\K[0-9.]+(?=/|,)' | head -1)
-            elif [[ "$type" == "vm" ]]; then
-                actual_ip=$(qm config "$vmid" 2>/dev/null | grep -oP 'ip=\K[0-9.]+(?=/|,)' | head -1)
-            fi
-            
-            if [[ -n "$actual_ip" ]] && [[ "$actual_ip" != "$expected_ip" ]]; then
-                warnings+=("  ${YELLOW}⚠${NC}  VMID $vmid: Erwartet $expected_ip, gefunden $actual_ip")
-                conflicts=$((conflicts + 1))
-            fi
-            
-            # Prüfe VMID-Range
-            if [[ "$type" == "lxc" ]]; then
-                if [[ $vmid -lt $LXC_ID_START ]] || [[ $vmid -gt $LXC_ID_END ]]; then
-                    warnings+=("  ${YELLOW}⚠${NC}  LXC $vmid außerhalb empfohlenem Bereich ($LXC_ID_START-$LXC_ID_END)")
-                fi
-            elif [[ "$type" == "vm" ]]; then
-                if [[ $vmid -lt $VM_ID_START ]] || [[ $vmid -gt $VM_ID_END ]]; then
-                    warnings+=("  ${YELLOW}⚠${NC}  VM $vmid außerhalb empfohlenem Bereich ($VM_ID_START-$VM_ID_END)")
-                fi
-            fi
+    # Prüfe nur existierende Container (viel schneller!)
+    while read -r line; do
+        local vmid=$(echo "$line" | awk '{print $1}')
+        local expected_ip=$(get_ip_for_vmid "$vmid")
+        local actual_ip=$(pct config "$vmid" 2>/dev/null | grep -oP 'ip=\K[0-9.]+(?=/|,)' | head -1)
+        
+        if [[ -n "$actual_ip" ]] && [[ "$actual_ip" != "$expected_ip" ]]; then
+            warnings+=("  ${YELLOW}⚠${NC}  LXC $vmid: Erwartet $expected_ip, gefunden $actual_ip")
+            conflicts=$((conflicts + 1))
         fi
-    done
+        
+        # Prüfe VMID-Range
+        if [[ $vmid -lt $LXC_ID_START ]] || [[ $vmid -gt $LXC_ID_END ]]; then
+            warnings+=("  ${YELLOW}⚠${NC}  LXC $vmid außerhalb empfohlenem Bereich ($LXC_ID_START-$LXC_ID_END)")
+        fi
+    done < <(pct list 2>/dev/null | tail -n +2)
+    
+    # Prüfe VMs
+    while read -r line; do
+        local vmid=$(echo "$line" | awk '{print $1}')
+        local expected_ip=$(get_ip_for_vmid "$vmid")
+        local actual_ip=$(qm config "$vmid" 2>/dev/null | grep -oP 'ip=\K[0-9.]+(?=/|,)' | head -1)
+        
+        if [[ -n "$actual_ip" ]] && [[ "$actual_ip" != "$expected_ip" ]]; then
+            warnings+=("  ${YELLOW}⚠${NC}  VM $vmid: Erwartet $expected_ip, gefunden $actual_ip")
+            conflicts=$((conflicts + 1))
+        fi
+        
+        # Prüfe VMID-Range
+        if [[ $vmid -lt $VM_ID_START ]] || [[ $vmid -gt $VM_ID_END ]]; then
+            warnings+=("  ${YELLOW}⚠${NC}  VM $vmid außerhalb empfohlenem Bereich ($VM_ID_START-$VM_ID_END)")
+        fi
+    done < <(qm list 2>/dev/null | tail -n +2)
     
     if [[ $conflicts -eq 0 ]] && [[ ${#warnings[@]} -eq 0 ]]; then
         echo "  ${GREEN}✓${NC} Keine Konflikte oder Warnungen gefunden"
@@ -307,54 +297,37 @@ show_free_ranges() {
     log_info "═══════════════════════════════════════════════════════"
     echo
     
-    # Freie LXC-IDs
-    local free_lxc=()
+    # Hole existierende VMIDs schnell
+    local existing_lxc=$(pct list 2>/dev/null | tail -n +2 | awk '{print $1}' | sort -n)
+    local existing_vm=$(qm list 2>/dev/null | tail -n +2 | awk '{print $1}' | sort -n)
+    
+    # Nächste 5 freie LXC-IDs
+    echo "  Nächste freie LXC-IDs:"
+    local count=0
     for vmid in $(seq $LXC_ID_START $LXC_ID_END); do
-        if ! vmid_exists "$vmid"; then
-            free_lxc+=("$vmid")
-        fi
-        
-        # Zeige nur ersten 5 und letzten 5
-        if [[ ${#free_lxc[@]} -eq 5 ]]; then
-            break
-        fi
-    done
-    
-    if [[ ${#free_lxc[@]} -gt 0 ]]; then
-        echo "  Nächste freie LXC-IDs:"
-        for vmid in "${free_lxc[@]}"; do
+        if ! echo "$existing_lxc" | grep -q "^${vmid}$"; then
             local ip=$(get_ip_for_vmid "$vmid")
             printf "    VMID %-4s → IP %s\n" "$vmid" "$ip"
-        done
-        echo
-    else
-        echo "  ${YELLOW}Keine freien LXC-IDs im Bereich $LXC_ID_START-$LXC_ID_END${NC}"
-        echo
-    fi
+            count=$((count + 1))
+            [[ $count -ge 5 ]] && break
+        fi
+    done
+    [[ $count -eq 0 ]] && echo "    ${YELLOW}Keine freien IDs im Bereich${NC}"
+    echo
     
-    # Freie VM-IDs
-    local free_vm=()
+    # Nächste 5 freie VM-IDs
+    echo "  Nächste freie VM-IDs:"
+    count=0
     for vmid in $(seq $VM_ID_START $VM_ID_END); do
-        if ! vmid_exists "$vmid"; then
-            free_vm+=("$vmid")
-        fi
-        
-        if [[ ${#free_vm[@]} -eq 5 ]]; then
-            break
-        fi
-    done
-    
-    if [[ ${#free_vm[@]} -gt 0 ]]; then
-        echo "  Nächste freie VM-IDs:"
-        for vmid in "${free_vm[@]}"; do
+        if ! echo "$existing_vm" | grep -q "^${vmid}$"; then
             local ip=$(get_ip_for_vmid "$vmid")
             printf "    VMID %-4s → IP %s\n" "$vmid" "$ip"
-        done
-        echo
-    else
-        echo "  ${YELLOW}Keine freien VM-IDs im Bereich $VM_ID_START-$VM_ID_END${NC}"
-        echo
-    fi
+            count=$((count + 1))
+            [[ $count -ge 5 ]] && break
+        fi
+    done
+    [[ $count -eq 0 ]] && echo "    ${YELLOW}Keine freien IDs im Bereich${NC}"
+    echo
 }
 
 show_quick_access() {
@@ -373,7 +346,7 @@ show_quick_access() {
     echo "    qm status <vmid>            # Status anzeigen"
     echo "    qm start/stop <vmid>        # Start/Stop"
     echo
-    echo "  Neue Container/VMs erstellen:"
+    echo "  Neue Container erstellen:"
     echo "    bash <(curl -fsSL https://raw.githubusercontent.com/matdan1987/server-helper-scripts/main/lxc/create-docker-lxc.sh)"
     echo "    bash <(curl -fsSL https://raw.githubusercontent.com/matdan1987/server-helper-scripts/main/lxc/create-nginx-proxy-lxc.sh)"
     echo
