@@ -3,7 +3,7 @@
 # Script: System Update All
 # Beschreibung: Aktualisiert alle System-Pakete auf Debian/Ubuntu/CentOS/Fedora
 # Autor: matdan1987
-# Version: 1.1.0
+# Version: 1.2.0
 # ==============================================================================
 
 set -euo pipefail
@@ -43,6 +43,26 @@ source "$LIB_DIR/common.sh"
 source "$LIB_DIR/os-detection.sh"
 source "$LIB_DIR/package-manager.sh"
 source "$LIB_DIR/dialog-helpers.sh"
+
+# =============================================================================
+# DIALOG-FALLBACK (falls dialog-helpers.sh Probleme hat)
+# =============================================================================
+
+# Überschreibe dialog_info mit sicherem Fallback
+dialog_info() {
+    local title="$1"
+    local message="$2"
+    
+    # Versuche mit whiptail/dialog
+    if command -v whiptail &>/dev/null; then
+        whiptail --title "$title" --msgbox "$message" 10 60 3>&1 1>&2 2>&3 || true
+    elif command -v dialog &>/dev/null; then
+        dialog --title "$title" --msgbox "$message" 10 60 2>&1 1>/dev/tty || true
+    else
+        # Fallback: einfache Ausgabe
+        echo "[$title] $message"
+    fi
+}
 
 # =============================================================================
 # KONFIGURATION
@@ -154,13 +174,21 @@ show_upgrade_info() {
     
     if [[ $upgradable -eq 0 ]]; then
         log_success "System ist bereits aktuell!"
-        if [[ "$INTERACTIVE" == "true" ]]; then
-            dialog_info "System ist aktuell" "Es sind keine Updates verfügbar."
+        
+        # Sichere Ausgabe statt Dialog
+        if [[ "$INTERACTIVE" == "true" ]] && [[ -t 0 ]]; then
+            echo
+            echo "═══════════════════════════════════════"
+            echo "  ℹ️  System ist aktuell"
+            echo "═══════════════════════════════════════"
+            echo "Es sind keine Updates verfügbar."
+            echo
         fi
+        
         exit 0
     fi
     
-    if [[ "$INTERACTIVE" == "true" ]]; then
+    if [[ "$INTERACTIVE" == "true" ]] && [[ -t 0 ]]; then
         dialog_info "Update-Information" "Verfügbare Updates: $upgradable Pakete"
     fi
 }
@@ -272,10 +300,12 @@ schedule_reboot() {
     log_warn "System wird in $seconds Sekunden neu gestartet..."
     
     if [[ "$INTERACTIVE" == "true" ]]; then
-        dialog_pause "Neustart" "System wird in $seconds Sekunden neu gestartet.\n\nDrücken Sie Esc zum Abbrechen." $seconds || {
-            log_info "Neustart abgebrochen"
-            return 0
-        }
+        # Einfacher Countdown ohne Dialog
+        for ((i=$seconds; i>0; i--)); do
+            echo -ne "\rNeustart in $i Sekunden... (Strg+C zum Abbrechen)  "
+            sleep 1
+        done
+        echo
     else
         sleep $seconds
     fi
