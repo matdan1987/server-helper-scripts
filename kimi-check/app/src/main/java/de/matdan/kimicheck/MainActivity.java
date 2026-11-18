@@ -104,7 +104,6 @@ public class MainActivity extends Activity {
     private Button addButton(LinearLayout holder, String label) {
         Button button = new Button(this);
         button.setText(label);
-        button.setTextAllCaps(false);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(50), 1);
         lp.setMargins(0, 0, dp(5), 0);
         holder.addView(button, lp);
