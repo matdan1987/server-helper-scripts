@@ -24,6 +24,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Android SDK tools
+        uses: android-actions/setup-android@v4
       - name: Android Platform 35
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
       - name: Gradle 8.11.1
